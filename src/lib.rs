@@ -2,16 +2,30 @@
 
 use std::collections::HashMap;
 
-/// Phase detected from rate-of-change history.
+/// Phase detected from a quantity's rate-of-change history.
+///
+/// Each variant describes the trajectory of a tracked quantity relative
+/// to its conservation boundary (initial value minus tolerance).
+///
+/// # Transitions
+///
+/// ```text
+/// Stable → PreTransition → Transitioning → Resolving → Stable
+/// ```
+///
+/// Use [`ConservationChecker::phase`] to obtain the current phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Rate of change is near zero.
+    /// Rate of change is near zero — the quantity is holding steady.
     Stable,
     /// Rate of change is accelerating but hasn't crossed the tolerance threshold.
+    ///
+    /// This is an early warning: the quantity is still conserved, but its
+    /// velocity is increasing and may lead to a violation.
     PreTransition,
-    /// Value is actively decreasing beyond tolerance.
+    /// Value is actively decreasing beyond tolerance — the conservation law is violated.
     Transitioning,
-    /// Value was decreasing but is now recovering.
+    /// Value was decreasing but is now recovering toward the baseline.
     Resolving,
 }
 
@@ -52,6 +66,15 @@ impl Default for ConservationChecker {
 
 impl ConservationChecker {
     /// Create a new, empty tracker.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use conservation_checker::ConservationChecker;
+    ///
+    /// let checker = ConservationChecker::new();
+    /// assert!(checker.registered().is_empty());
+    /// ```
     pub fn new() -> Self {
         Self {
             quantities: HashMap::new(),
@@ -63,6 +86,19 @@ impl ConservationChecker {
     /// `tolerance` is the maximum allowed decrease from the initial value
     /// before the quantity is considered *violated*. Use `0.0` for strict
     /// conservation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use conservation_checker::ConservationChecker;
+    ///
+    /// let mut checker = ConservationChecker::new();
+    /// checker.register("energy", 100.0, 5.0);  // allow up to 5.0 decrease
+    /// checker.register("budget", 1000.0, 0.0); // strict: any decrease violates
+    ///
+    /// assert!(checker.is_conserved("energy"));
+    /// assert!(checker.is_conserved("budget"));
+    /// ```
     pub fn register(&mut self, name: impl Into<String>, initial_value: f64, tolerance: f64) {
         let name = name.into();
         self.quantities.insert(
@@ -78,8 +114,25 @@ impl ConservationChecker {
 
     /// Update the current value of a registered quantity.
     ///
+    /// Call this whenever the tracked quantity changes. After updating, use
+    /// [`is_conserved`](Self::is_conserved) to check whether the new value
+    /// is still within tolerance.
+    ///
     /// # Panics
+    ///
     /// Panics if `name` has not been registered.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use conservation_checker::ConservationChecker;
+    ///
+    /// let mut checker = ConservationChecker::new();
+    /// checker.register("tokens", 100.0, 0.0);
+    /// checker.update("tokens", 80.0);
+    ///
+    /// assert!(!checker.is_conserved("tokens"));
+    /// ```
     pub fn update(&mut self, name: &str, value: f64) {
         let state = self
             .quantities
@@ -92,6 +145,10 @@ impl ConservationChecker {
     ///
     /// A quantity is conserved when `current >= initial - tolerance`.
     /// Increases are always OK (one-sided conservation).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` has not been registered.
     pub fn is_conserved(&self, name: &str) -> bool {
         let state = self
             .quantities
@@ -114,6 +171,25 @@ impl ConservationChecker {
     /// Call this periodically (e.g. once per tick, request, or batch) to
     /// build a time-series that [`phase`](Self::phase) and
     /// [`drift_rate`](Self::drift_rate) can analyse.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use conservation_checker::ConservationChecker;
+    ///
+    /// let mut checker = ConservationChecker::new();
+    /// checker.register("budget", 500.0, 100.0);
+    ///
+    /// checker.update("budget", 450.0);
+    /// checker.snapshot();
+    ///
+    /// checker.update("budget", 420.0);
+    /// checker.snapshot();
+    ///
+    /// // drift_rate now compares first and last snapshot
+    /// let drift = checker.drift_rate("budget");
+    /// assert!(drift < 0.0); // budget is drifting downward
+    /// ```
     pub fn snapshot(&mut self) {
         for state in self.quantities.values_mut() {
             state.history.push(state.current);
@@ -123,7 +199,31 @@ impl ConservationChecker {
     /// Detect the current phase of a quantity based on its history.
     ///
     /// Uses the most recent snapshots to compute a short-term rate of change
-    /// and classifies the trajectory accordingly.
+    /// and classifies the trajectory as [`Phase::Stable`], [`Phase::PreTransition`],
+    /// [`Phase::Transitioning`], or [`Phase::Resolving`].
+    ///
+    /// Requires at least 3 snapshots to return anything other than `Stable`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` has not been registered.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use conservation_checker::{ConservationChecker, Phase};
+    ///
+    /// let mut checker = ConservationChecker::new();
+    /// checker.register("energy", 100.0, 0.0);
+    ///
+    /// // Drain it down
+    /// checker.update("energy", 90.0);
+    /// checker.snapshot();
+    /// checker.update("energy", 80.0);
+    /// checker.snapshot();
+    ///
+    /// assert_eq!(checker.phase("energy"), Phase::Transitioning);
+    /// ```
     pub fn phase(&self, name: &str) -> Phase {
         let state = self
             .quantities
@@ -171,7 +271,12 @@ impl ConservationChecker {
 
     /// Compute the average rate of change per snapshot for a quantity.
     ///
+    /// Computed as `(last_value - first_value) / (snapshot_count - 1)`.
     /// Returns `0.0` when there are fewer than two snapshots.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` has not been registered.
     pub fn drift_rate(&self, name: &str) -> f64 {
         let state = self
             .quantities
@@ -188,6 +293,10 @@ impl ConservationChecker {
     }
 
     /// Get the current value of a quantity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` has not been registered.
     pub fn current_value(&self, name: &str) -> f64 {
         let state = self
             .quantities
@@ -196,7 +305,11 @@ impl ConservationChecker {
         state.current
     }
 
-    /// Get the initial value of a quantity.
+    /// Get the initial value the quantity was registered with.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` has not been registered.
     pub fn initial_value(&self, name: &str) -> f64 {
         let state = self
             .quantities
@@ -205,7 +318,11 @@ impl ConservationChecker {
         state.initial
     }
 
-    /// Get the number of snapshots recorded for a quantity.
+    /// Get the number of snapshots recorded for a quantity (including the initial value).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` has not been registered.
     pub fn snapshot_count(&self, name: &str) -> usize {
         let state = self
             .quantities
@@ -214,17 +331,42 @@ impl ConservationChecker {
         state.history.len()
     }
 
-    /// List all registered quantity names.
+    /// List all registered quantity names in arbitrary order.
     pub fn registered(&self) -> Vec<String> {
         self.quantities.keys().cloned().collect()
     }
 
     /// Remove a quantity from the tracker.
+    ///
+    /// Returns `true` if the quantity existed and was removed, `false` otherwise.
     pub fn deregister(&mut self, name: &str) -> bool {
         self.quantities.remove(name).is_some()
     }
 
-    /// Reset a quantity's initial value to its current value, clearing violations.
+    /// Reset a quantity's initial value to its current value, clearing any violations.
+    ///
+    /// Useful after resolving a violation to establish a new baseline without
+    /// re-registering the quantity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` has not been registered.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use conservation_checker::ConservationChecker;
+    ///
+    /// let mut checker = ConservationChecker::new();
+    /// checker.register("budget", 100.0, 0.0);
+    /// checker.update("budget", 50.0);
+    ///
+    /// assert!(!checker.is_conserved("budget"));
+    ///
+    /// checker.reset_baseline("budget");
+    /// assert!(checker.is_conserved("budget"));
+    /// assert_eq!(checker.initial_value("budget"), 50.0);
+    /// ```
     pub fn reset_baseline(&mut self, name: &str) {
         let state = self
             .quantities
