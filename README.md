@@ -132,6 +132,13 @@ pub enum Phase {
 }
 ```
 
+## When to Use This vs `negative-space-testing`
+
+`negative-space-testing` includes its own `ConservationChecker` designed for test-time use (it's a `dev-dependency`). Use **this standalone crate** when you need conservation checking in **production code** — monitoring, runtime assertions, or any non-test context.
+
+- **`conservation-checker`** — Production dependency. Runtime monitoring, drift detection, phase analysis.
+- **`negative-space-testing::ConservationChecker`** — Dev dependency. Test assertions, training-loop validation, CI checks.
+
 ## Design Principles
 
 - **Zero dependencies** — nothing to audit, nothing to break
