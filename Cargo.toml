@@ -1,0 +1,20 @@
+[package]
+name = "conservation-checker"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Track quantities that must not decrease across operations — one-sided conservation laws for budgets, energy, quotas, and more."
+repository = "https://github.com/SuperInstance/conservation-checker"
+keywords = ["conservation", "invariants", "monitoring", "tracking", "budget"]
+categories = ["algorithms", "development-tools::testing"]
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
+
+[[example]]
+name = "budget_tracking"
+path = "examples/budget_tracking.rs"
