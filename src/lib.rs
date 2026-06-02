@@ -1,5 +1,8 @@
 #![deny(unsafe_code)]
 
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
+
 use std::collections::HashMap;
 
 /// Phase detected from a quantity's rate-of-change history.
@@ -15,6 +18,7 @@ use std::collections::HashMap;
 ///
 /// Use [`ConservationChecker::phase`] to obtain the current phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Phase {
     /// Rate of change is near zero — the quantity is holding steady.
     Stable,
@@ -41,6 +45,7 @@ impl std::fmt::Display for Phase {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct QuantityState {
     initial: f64,
     current: f64,
@@ -54,6 +59,7 @@ struct QuantityState {
 /// (beyond an optional tolerance). It records snapshots over time so you can
 /// detect drift, phase transitions, and violations.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ConservationChecker {
     quantities: HashMap<String, QuantityState>,
 }
@@ -373,6 +379,32 @@ impl ConservationChecker {
             .get_mut(name)
             .unwrap_or_else(|| panic!("quantity '{}' not registered", name));
         state.initial = state.current;
+    }
+
+    /// Serialize a snapshot of all quantities to a JSON string.
+    ///
+    /// Produces a JSON object with each quantity's name, current value,
+    /// initial value, tolerance, and conserved status. Useful for
+    /// Prometheus-style export or logging.
+    ///
+    /// Requires the `serde` feature.
+    #[cfg(feature = "serde")]
+    pub fn snapshot_json(&self) -> String {
+        use serde_json::json;
+        let quantities: Vec<serde_json::Value> = self
+            .quantities
+            .iter()
+            .map(|(name, state)| {
+                json!({
+                    "name": name,
+                    "initial": state.initial,
+                    "current": state.current,
+                    "tolerance": state.tolerance,
+                    "conserved": state.current >= state.initial - state.tolerance,
+                })
+            })
+            .collect();
+        serde_json::to_string(&quantities).unwrap_or_else(|_| "[]".to_string())
     }
 }
 
